@@ -228,22 +228,43 @@ class @AutoComplete
     Meteor.defer => @ensureSelection()
 
     # if server collection, the server has already done the filtering work
-    return AutoCompleteRecords.find({}, options) if isServerSearch(rule)
+
+    # TODO: Add to rules to make this specific to the searches where it's necessary.
+    if isServerSearch(rule)
+      if rule.autocompleteSort
+        hits = AutoCompleteRecords.find({}, options).fetch()
+
+        # Return the results that start with the query string first, sorted by length
+        val = @getText()
+        typeaheadResults = _.filter( hits, (hit) -> hit.name.search( "^#{val}.*" ) > -1 )
+        typeaheadResults = _.sortBy( typeaheadResults, (hit) -> return hit.name.length )
+        otherResults = _.filter( hits, (hit) -> return hit not in typeaheadResults )
+
+        # Then append the remaining results
+        sortedResults = typeaheadResults.concat( otherResults )
+        return sortedResults
+      else
+        return AutoCompleteRecords.find({}, options)
 
     # Otherwise, search on client
     return rule.collection.find(selector, options)
 
   isShowing: ->
     rule = @matchedRule()
+
     # Same rules as above
     showing = rule? and (rule.token or @getFilter())
 
     # Do this after the render
+    # n.b. had to revert to a long timeout as asking jquery for the DOM height()
+    # is not reliable in deployed environment where results arrive more slowly
+    # and thus panel takes a while to reach full height
+
     if showing
       Meteor.setTimeout =>
         @positionContainer()
         @ensureSelection()
-      , 25
+      , 100
 
     return showing
 
@@ -281,14 +302,14 @@ class @AutoComplete
 
     @$element
       .addClass("chosen")
-      .trigger("chosen", doc)    
+      .trigger("chosen", doc)
 
   triggerFooterAction: (e) ->
     @$element
       .trigger(@rules[@matched].footerAction)
       .blur()
     @hideList()
-    @setText("")      
+    @setText("")
 
   triggerNoMatchAction: (e) ->
     @$element.trigger(@rules[@matched].noMatchAction)
@@ -325,37 +346,41 @@ class @AutoComplete
     Rendering functions
   ###
   positionContainer: ->
-    position = @$element.position()
+    el = @$element
+    position = el.position()
     rule = @matchedRule()
 
     style =
       position: 'absolute'
       left: position.left
+      width: el.outerWidth()
       opacity: 1
-    
+
     if @position is "auto"
-      # Determine if we should place results above or below
-      # 
       $results = @tmplInst.$(".-autocomplete-list")
-      offset = @$element.offset()
+      offset = el.offset()
+      resultPanelHeight = $results.height() + el.outerHeight()
 
-      style.width = @$element.outerWidth()
+      positionAbove = (offset.top + resultPanelHeight) > $(document).height()
 
-      if (offset.top + $results.height() + 20) > $(document).height()
+      if positionAbove
+        console.log "positioning dropdown above"
+
         style.position = 'fixed'
         style.left = offset.left
         style.top = offset.top - $results.height()
         # TODO some kind of scroll handling - would probably suffice to hide on scroll
         $(window).one("scroll", @onBlur)
       else
-        style.top = position.top + @$element.outerHeight()
+        console.log "positioning dropdown below"
+        style.top = position.top + el.outerHeight()
 
-    else 
+    else
       # In whole-field positioning, we don't move the container and make it the
       # full width of the field.
       # TODO allow this to render top as well, and possibly used in textareas?
-      style.top = position.top + @$element.outerHeight() # position.offsetHeight
-      style.width = @$element.outerWidth()               # position.offsetWidth
+      console.log "positioning dropdown relative to container"
+      style.top = position.top + el.outerHeight() # position.offsetHeight
 
     @tmplInst.$(".-autocomplete-container").css(style)
 
