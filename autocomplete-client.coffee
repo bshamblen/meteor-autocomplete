@@ -233,21 +233,46 @@ class @AutoComplete
     if isServerSearch(rule)
       if rule.autocompleteSort
         hits = AutoCompleteRecords.find({}, options).fetch()
-
-        # Return the results that start with the query string first, sorted by length
         val = @getText()
-        typeaheadResults = _.filter( hits, (hit) -> hit.name.search( "^#{val}.*" ) > -1 )
-        typeaheadResults = _.sortBy( typeaheadResults, (hit) -> return hit.name.length )
-        otherResults = _.filter( hits, (hit) -> return hit not in typeaheadResults )
-
-        # Then append the remaining results
-        sortedResults = typeaheadResults.concat( otherResults )
-        return sortedResults
+        return @autocompleteSort(hits, val)
       else
         return AutoCompleteRecords.find({}, options)
 
     # Otherwise, search on client
-    return rule.collection.find(selector, options)
+    if rule.autocompleteSort
+      # Need to get back a lot of results to capture all prefix matches
+      limit = options.limit
+      options.limit = 50
+      hits = rule.collection.find(selector, options).fetch()
+      val = @getText()
+      return @autocompleteSort(hits, val).slice(0, limit)
+    else
+      return rule.collection.find(selector, options)
+
+  autocompleteSort: (hits, query_string) ->
+    # Return the results that start with the query string first, sorted by length
+    # All typeahead results on name come first, then all synonyms, finally all
+    # symbols. BUT, a full-string match to a name or synonym is put first.
+    typeaheadResults = _.filter( hits, (hit) ->
+      return hit.name.search( "^#{query_string}.*" ) > -1 or
+        _.any(hit.synonyms, (syn) -> syn.search( "^#{query_string}.*" ) > -1) or
+        hit.symbol?.search( "^#{query_string}.*" ) > -1
+    )
+    typeaheadResults = _.sortBy( typeaheadResults, (hit) ->
+      if query_string is hit.name or _.any(hit.synonyms, (syn) -> query_string is syn)
+        return 0
+      if hit.name.search( "^#{query_string}.*" ) > -1
+        return hit.name.length
+      else if _.any(hit.synonyms, (syn) -> syn.search( "^#{query_string}.*" ) > -1)
+        matchingSynonym = _.find(hit.synonyms, (syn) -> syn.search( "^#{query_string}.*" ) > -1)
+        return matchingSynonym.length + 100
+      else
+        return hit.symbol?.length + 200
+    )
+    otherResults = _.filter( hits, (hit) -> return hit not in typeaheadResults )
+
+    # Then append the remaining results
+    return typeaheadResults.concat( otherResults )
 
   isShowing: ->
     rule = @matchedRule()
